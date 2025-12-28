@@ -1,3 +1,75 @@
+### 2025-11-19: RNS 1.0.4
+
+This maintenance release adds improved handling for RNodes with a PA/LNA combo.
+
+**Changes**
+- Improved handling for RNodes with PA/LNA combo
+- Added interference detection stats to `rnstatus` output for RNode interfaces
+- Updated documentation
+
+**Release Hashes**
+```
+7a2b7893410833b42c0fa7f9a9e3369cebb085cdd26bd83f3031fa6c1051653c rns-1.0.4-py3-none-any.whl
+ee647e7b3b94abdf1fab618a861390531a4aacc93eecce12c9e97280195c0e2d rnspure-1.0.4-py3-none-any.whl
+```
+
+### 2025-11-19: RNS 1.0.3
+
+This release includes updates to RNode BLE reliability, and adds support for connecting RNodes to a host over WiFi and Ethernet.
+
+**Changes**
+- Added support for connecting RNode devices over WiFi and Ethernet
+- Added support for configuring RNode WiFi and IP settings to `rnodeconf`
+- Updated BLE connection read timeouts on Android, fixes intermittent BLE connection resets in areas with high 2.4GHz spectrum utilization
+- Added handling for edge case where RNode serial port was never opened due to failure on interface detach
+- Fixed broken links in documentation
+
+**Release Hashes**
+```
+6bafde4c838ad778bf6878967e84c798e34d6ca621b255f59a60f38cb04ac138 rns-1.0.3-py3-none-any.whl
+f277899f95c1189c6bf3beb40ac656c8b36dfd3d7e4cfb2bc3b4a1e6dc3484fa rnspure-1.0.3-py3-none-any.whl
+```
+
+### 2025-11-10: RNS 1.0.2
+
+This maintenance release adds support for high-power RNodes with a LoRa PA and/or LNA.
+
+**Changes**
+- Added support for RNodes with a PA and/or LNA
+- Added support for monitoring RNode CPU temperature via `rnodeconf`
+
+**Release Hashes**
+```
+723bcf0a839025060ff680c4202b09fa766b35093a4a08506bb85485b8a1f154 rns-1.0.2-py3-none-any.whl
+b02de8aeb1381ed2610f27f78799bab031367ed7bf500951fb8d5c2542d4a409 rnspure-1.0.2-py3-none-any.whl
+```
+
+### 2025-11-02: RNS 1.0.1
+
+This release brings a number of bugfixes, as well as stability and reliability improvements. It also adds support for using Weave devices as Reticulum interfaces, fixes long-standing Bluetooth Low Energy connection issues on Android, and includes several API and usability improvements.
+
+**Changes**
+- Added path response signalling to announce handler API
+- Added interface module for Weave devices
+- Added support for connecting to Weave devices over serial/USB on Android
+- Added support for allow files to `rnx`
+- Added detection and logging of multicast echoes never arriving on AutoInterface system devices.
+- Added Heltec v4 support to `rnodeconf`
+- Implemented handler for ensuring dynamic destination app data can be generated and sent even on first system-internal discovery announce
+- Updated documentation and manual
+- Improved `AutoInterface` peering timing
+- Fixed RNodeInterface Bluetooth Low Energy connection hangs on Android
+- Fixed RNodeInterface Bluetooth Low Energy MTU not being configured correctly on Android
+- Fixed command byte collision in RNodeInterface and RNodeMultiInterface
+- Fixed string formatting for Android log output
+- Updated output formatting for `rnid`
+
+**Release Hashes**
+```
+aa77b4c8e1b6899117666e1e55b05b3250416ab5fea2826254358ae320e8b3ed rns-1.0.1-py3-none-any.whl
+b3ddfa0b533631d9f1213043a0282952ae6e9f72c3072bbca053ac48e0483f7e rnspure-1.0.1-py3-none-any.whl
+```
+
 ### 2025-07-14: RNS 1.0.0
 
 We're out of beta. Thanks to **everyone** who helped make it this far.

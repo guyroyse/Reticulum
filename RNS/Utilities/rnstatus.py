@@ -35,6 +35,7 @@ import os
 import sys
 import time
 import argparse
+import io
 
 from RNS._version import __version__
 
@@ -263,6 +264,7 @@ def program_setup(configdir, dispall=False, verbosity=0, name_filter=None, json=
                 name.startswith("TCPInterface[Client") or
                 name.startswith("BackboneInterface[Client on") or
                 name.startswith("AutoInterfacePeer[") or
+                name.startswith("WeaveInterfacePeer[") or
                 name.startswith("I2PInterfacePeer[Connected peer") or
                 (name.startswith("I2PInterface[") and ("i2p_connectable" in ifstat and ifstat["i2p_connectable"] == False))
                 ):
@@ -271,23 +273,15 @@ def program_setup(configdir, dispall=False, verbosity=0, name_filter=None, json=
                     if name_filter == None or name_filter.lower() in name.lower():
                         print("")
 
-                        if ifstat["status"]:
-                            ss = "Up"
-                        else:
-                            ss = "Down"
+                        if ifstat["status"]: ss = "Up"
+                        else: ss = "Down"
 
-                        if ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_ACCESS_POINT:
-                            modestr = "Access Point"
-                        elif ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_POINT_TO_POINT:
-                            modestr = "Point-to-Point"
-                        elif ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_ROAMING:
-                            modestr = "Roaming"
-                        elif ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_BOUNDARY:
-                            modestr = "Boundary"
-                        elif ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_GATEWAY:
-                            modestr = "Gateway"
-                        else:
-                            modestr = "Full"
+                        if ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_ACCESS_POINT: modestr = "Access Point"
+                        elif ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_POINT_TO_POINT: modestr = "Point-to-Point"
+                        elif ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_ROAMING: modestr = "Roaming"
+                        elif ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_BOUNDARY: modestr = "Boundary"
+                        elif ifstat["mode"] == RNS.Interfaces.Interface.Interface.MODE_GATEWAY: modestr = "Gateway"
+                        else: modestr = "Full"
 
 
                         if ifstat["clients"] != None:
@@ -334,10 +328,32 @@ def program_setup(configdir, dispall=False, verbosity=0, name_filter=None, json=
                             print("    Rate      : {ss}".format(ss=speed_str(ifstat["bitrate"])))
 
                         if "noise_floor" in ifstat:
-                            if ifstat["noise_floor"] != None:
-                                print("    Noise Fl. : {nfl} dBm".format(nfl=str(ifstat["noise_floor"])))
+                            if not "interference" in ifstat: nstr = ""
                             else:
-                                print("    Noise Fl. : Unknown")
+                                nf = ifstat["interference"]
+                                lstr = ", no interference"
+                                if "interference_last_ts" in ifstat and "interference_last_dbm" in ifstat:
+                                    lago = time.time()-ifstat["interference_last_ts"]
+                                    ldbm = ifstat["interference_last_dbm"]
+                                    lstr = f"\n    Intrfrnc. : {ldbm} dBm {RNS.prettytime(lago, compact=True)} ago"
+
+
+                                nstr = f"\n    Intrfrnc. : {nf} dBm" if nf else lstr
+
+                            if ifstat["noise_floor"] != None: print("    Noise Fl. : {nfl} dBm{ntr}".format(nfl=str(ifstat["noise_floor"]), ntr=nstr))
+                            else: print("    Noise Fl. : Unknown")
+
+                        if "cpu_load" in ifstat:
+                            if ifstat["cpu_load"] != None: print("    CPU load  : {v} %".format(v=str(ifstat["cpu_load"])))
+                            else:                          print("    CPU load  : Unknown")
+
+                        if "cpu_temp" in ifstat:
+                            if ifstat["cpu_temp"] != None: print("    CPU temp  : {v}°C".format(v=str(ifstat["cpu_temp"])))
+                            else:                          print("    CPU load  : Unknown")
+
+                        if "mem_load" in ifstat:
+                            if ifstat["cpu_load"] != None: print("    Mem usage : {v} %".format(v=str(ifstat["mem_load"])))
+                            else:                          print("    Mem usage : Unknown")
 
                         if "battery_percent" in ifstat and ifstat["battery_percent"] != None:
                             try:
@@ -352,6 +368,18 @@ def program_setup(configdir, dispall=False, verbosity=0, name_filter=None, json=
                         
                         if "channel_load_short" in ifstat and "channel_load_long" in ifstat:
                             print("    Ch. Load  : {ats}% (15s), {atl}% (1h)".format(ats=str(ifstat["channel_load_short"]),atl=str(ifstat["channel_load_long"])))
+
+                        if "switch_id" in ifstat:
+                            if ifstat["switch_id"] != None: print("    Switch ID : {v}".format(v=str(ifstat["switch_id"])))
+                            else:                           print("    Switch ID : Unknown")
+
+                        if "endpoint_id" in ifstat:
+                            if ifstat["endpoint_id"] != None: print("    Endpoint  : {v}".format(v=str(ifstat["endpoint_id"])))
+                            else:                             print("    Endpoint  : Unknown")
+
+                        if "via_switch_id" in ifstat:
+                            if ifstat["via_switch_id"] != None: print("    Via       : {v}".format(v=str(ifstat["via_switch_id"])))
+                            else:                               print("    Via       : Unknown")
 
                         if "peers" in ifstat and ifstat["peers"] != None:
                             print("    Peers     : {np} reachable".format(np=ifstat["peers"]))
@@ -535,6 +563,24 @@ def main(must_exit=True, rns_instance=None):
 
         parser.add_argument('-v', '--verbose', action='count', default=0)
 
+        parser.add_argument(
+            "-m",
+            "--monitor",
+            action="store_true",
+            help="continuously monitor status",
+            default=False
+        )
+
+        parser.add_argument(
+            "-I",
+            "--monitor-interval",
+            action="store",
+            metavar="seconds",
+            type=float,
+            help="refresh interval for monitor mode (default: 1)",
+            default=1.0
+        )
+
         parser.add_argument("filter", nargs="?", default=None, help="only display interfaces with names including filter", type=str)
         
         args = parser.parse_args()
@@ -544,23 +590,69 @@ def main(must_exit=True, rns_instance=None):
         else:
             configarg = None
 
-        program_setup(
-            configdir = configarg,
-            dispall = args.all,
-            verbosity=args.verbose,
-            name_filter=args.filter,
-            json=args.json,
-            astats=args.announce_stats,
-            lstats=args.link_stats,
-            sorting=args.sort,
-            sort_reverse=args.reverse,
-            remote=args.R,
-            management_identity=args.i,
-            remote_timeout=args.w,
-            must_exit=must_exit,
-            rns_instance=rns_instance,
-            traffic_totals=args.totals,
-        )
+        if args.monitor:
+            if args.R:
+                require_shared = False
+            else:
+                require_shared = True
+            
+            try:
+                reticulum = RNS.Reticulum(configdir=configarg, loglevel=3+args.verbose, require_shared_instance=require_shared)
+            except Exception as e:
+                print("No shared RNS instance available to get status from")
+                exit(1)
+
+
+            while True:
+                buffer = io.StringIO()
+                old_stdout = sys.stdout
+                sys.stdout = buffer
+                
+                try:
+                    program_setup(
+                        configdir = configarg,
+                        dispall = args.all,
+                        verbosity=args.verbose,
+                        name_filter=args.filter,
+                        json=args.json,
+                        astats=args.announce_stats,
+                        lstats=args.link_stats,
+                        sorting=args.sort,
+                        sort_reverse=args.reverse,
+                        remote=args.R,
+                        management_identity=args.i,
+                        remote_timeout=args.w,
+                        must_exit=False,
+                        rns_instance=reticulum,
+                        traffic_totals=args.totals,
+                    )
+                finally:
+                    sys.stdout = old_stdout
+                
+                output = buffer.getvalue()
+                print("\033[H\033[2J", end="")
+                print(output, end="", flush=True)
+                
+                time.sleep(args.monitor_interval)
+
+        else:
+            program_setup(
+                configdir = configarg,
+                dispall = args.all,
+                verbosity=args.verbose,
+                name_filter=args.filter,
+                json=args.json,
+                astats=args.announce_stats,
+                lstats=args.link_stats,
+                sorting=args.sort,
+                sort_reverse=args.reverse,
+                remote=args.R,
+                management_identity=args.i,
+                remote_timeout=args.w,
+                must_exit=must_exit,
+                rns_instance=rns_instance,
+                traffic_totals=args.totals,
+            )
 
     except KeyboardInterrupt:
         print("")

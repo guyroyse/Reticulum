@@ -74,7 +74,7 @@ class KISS():
     CMD_FW_VERSION  = 0x50
     CMD_ROM_READ    = 0x51
     CMD_RESET       = 0x55
-    CMD_INTERFACES  = 0x64
+    CMD_INTERFACES  = 0x71
 
     CMD_INT0_DATA   = 0x00
     CMD_INT1_DATA   = 0x10
@@ -1012,7 +1012,7 @@ class RNodeSubInterface(Interface):
             RNS.log("Invalid interface type configured for "+str(self), RNS.LOG_ERROR)
             self.validcfg = False
 
-        if (self.txpower < -9 or self.txpower > 27):
+        if (self.txpower < -9 or self.txpower > 37):
             RNS.log("Invalid TX power configured for "+str(self), RNS.LOG_ERROR)
             self.validcfg = False
 

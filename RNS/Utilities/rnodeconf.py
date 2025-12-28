@@ -49,9 +49,9 @@ import RNS
 RNS.logtimefmt      = "%H:%M:%S"
 RNS.compact_log_fmt = True
 
-program_version = "2.4.0"
-eth_addr = "0xFDabC71AC4c0C78C95aDDDe3B4FA19d6273c5E73"
-btc_addr = "35G9uWVzrpJJibzUwpNUQGQNFzLirhrYAH"
+program_version = "2.5.0"
+eth_addr = "0x91C421DdfB8a30a49A71d63447ddb54cEBe3465E"
+btc_addr = "bc1pgqgu8h8xvj4jtafslq396v7ju7hkgymyrzyqft4llfslz5vp99psqfk3a6"
 xmr_addr = "87HcDx6jRSkMQ9nPRd5K9hGGpZLn2s7vWETjMaVM5KfV4TD36NcYa8J8WSxhTSvBzzFpqDwp2fg5GX2moZ7VAP9QMZCZGET"
 
 rnode = None
@@ -97,10 +97,17 @@ class KISS():
     CMD_BT_CTRL     = 0x46
     CMD_BT_PIN      = 0x62
     CMD_DIS_IA      = 0x69
+    CMD_WIFI_MODE   = 0x6A
+    CMD_WIFI_SSID   = 0x6B
+    CMD_WIFI_PSK    = 0x6C
+    CMD_WIFI_CHN    = 0x6E
+    CMD_WIFI_IP     = 0x84
+    CMD_WIFI_NM     = 0x85
     CMD_BOARD       = 0x47
     CMD_PLATFORM    = 0x48
     CMD_MCU         = 0x49
     CMD_FW_VERSION  = 0x50
+    CMD_CFG_READ    = 0x6D
     CMD_ROM_READ    = 0x51
     CMD_ROM_WRITE   = 0x52
     CMD_ROM_WIPE    = 0x59
@@ -167,6 +174,7 @@ class ROM():
     MODEL_B9            = 0xB9
     MODEL_B4_TCXO       = 0x04 # The TCXO model codes are only used here to select the correct firmware,
     MODEL_B9_TCXO       = 0x09 # actual model codes in firmware is still 0xB4 and 0xB9.
+    
     PRODUCT_H32_V2      = 0xC0
     MODEL_C4            = 0xC4
     MODEL_C9            = 0xC9
@@ -174,6 +182,9 @@ class ROM():
     PRODUCT_H32_V3      = 0xC1
     MODEL_C5            = 0xC5
     MODEL_CA            = 0xCA
+
+    PRODUCT_H32_V4      = 0xC3
+    MODEL_C8            = 0xC8 # 868/915/923 MHz with PA
 
     PRODUCT_TBEAM       = 0xE0
     MODEL_E4            = 0xE4
@@ -241,6 +252,12 @@ class ROM():
     ADDR_CONF_PINT = 0xB6
     ADDR_CONF_BSET = 0xB7
     ADDR_CONF_DIA  = 0xB9
+    ADDR_CONF_WIFI = 0xBA
+    ADDR_CONF_WCHN = 0xBB
+    ADDR_CONF_SSID = 0x00
+    ADDR_CONF_PSK  = 0x21
+    ADDR_CONF_IP   = 0x42
+    ADDR_CONF_NM   = 0x46
 
     INFO_LOCK_BYTE = 0x73
     CONF_OK_BYTE   = 0x73
@@ -270,6 +287,7 @@ products = {
     ROM.PRODUCT_T32_21: "LilyGO LoRa32 v2.1",
     ROM.PRODUCT_H32_V2: "Heltec LoRa32 v2",
     ROM.PRODUCT_H32_V3: "Heltec LoRa32 v3",
+    ROM.PRODUCT_H32_V4: "Heltec LoRa32 v4",
     ROM.PRODUCT_TECHO:  "LilyGO T-Echo",
     ROM.PRODUCT_RAK4631: "RAK4631",
     ROM.PRODUCT_OPENCOM_XL: "openCom XL",
@@ -314,6 +332,7 @@ models = {
     0xC9: [850000000, 950000000, 17, "850 - 950 MHz", "rnode_firmware_heltec32v2.zip", "SX1276"],
     0xC5: [420000000, 520000000, 22, "420 - 520 MHz", "rnode_firmware_heltec32v3.zip", "SX1268"],
     0xCA: [850000000, 950000000, 22, "850 - 950 MHz", "rnode_firmware_heltec32v3.zip", "SX1262"],
+    0xC8: [860000000, 930000000, 28, "850 - 950 MHz", "rnode_firmware_heltec32v4pa.zip", "SX1262"],
     0xC6: [420000000, 520000000, 22, "420 - 520 MHz", "rnode_firmware_heltec_t114.zip", "SX1268"],
     0xC7: [850000000, 950000000, 22, "850 - 950 MHz", "rnode_firmware_heltec_t114.zip", "SX1262"],
     0xE4: [420000000, 520000000, 17, "420 - 520 MHz", "rnode_firmware_tbeam.zip", "SX1278"],
@@ -396,6 +415,7 @@ class RNode():
         self.platform = None
         self.mcu = None
         self.eeprom = None
+        self.cfg_sector = None
         self.major_version = None
         self.minor_version = None
         self.version = None
@@ -455,15 +475,31 @@ class RNode():
                         in_frame = False
                         data_buffer = b""
                         command_buffer = b""
+                    elif (in_frame and byte == KISS.FEND and command == KISS.CMD_CFG_READ):
+                        self.cfg_sector = data_buffer
+                        in_frame = False
+                        data_buffer = b""
+                        command_buffer = b""
                     elif (byte == KISS.FEND):
                         in_frame = True
                         command = KISS.CMD_UNKNOWN
                         data_buffer = b""
                         command_buffer = b""
-                    elif (in_frame and len(data_buffer) < 512):
+                    elif (in_frame and len(data_buffer) < 1024):
                         if (len(data_buffer) == 0 and command == KISS.CMD_UNKNOWN):
                             command = byte
                         elif (command == KISS.CMD_ROM_READ):
+                            if (byte == KISS.FESC):
+                                escape = True
+                            else:
+                                if (escape):
+                                    if (byte == KISS.TFEND):
+                                        byte = KISS.FEND
+                                    if (byte == KISS.TFESC):
+                                        byte = KISS.FESC
+                                    escape = False
+                                data_buffer = data_buffer+bytes([byte])
+                        elif (command == KISS.CMD_CFG_READ):
                             if (byte == KISS.FESC):
                                 escape = True
                             else:
@@ -782,6 +818,92 @@ class RNode():
         if written != len(kiss_command):
             raise IOError("An IO error occurred while sending firmware update command to device")
 
+    def set_wifi_mode(self, mode):
+        kiss_command = bytes([KISS.FEND])+bytes([KISS.CMD_WIFI_MODE, mode])+bytes([KISS.FEND])
+        written = self.serial.write(kiss_command)
+        if written != len(kiss_command):
+            raise IOError("An IO error occurred while sending wifi mode command to device")
+
+    def set_wifi_channel(self, channel):
+        try: ch = int(channel)
+        except: raise ValueError("Invalid WiFi channel")
+        if ch < 1 or ch > 14: raise ValueError("Invalid WiFi channel")
+        ch_data = bytes([ch])
+        data = KISS.escape(ch_data)
+        kiss_command = bytes([KISS.FEND])+bytes([KISS.CMD_WIFI_CHN])+data+bytes([KISS.FEND])
+
+        written = self.serial.write(kiss_command)
+        if written != len(kiss_command):
+            raise IOError("An IO error occurred while sending wifi channel to device")
+
+    def set_wifi_ip(self, ip):
+        if ip == None: ip_data = bytes([0x00, 0x00, 0x00, 0x00])
+        else:
+            ip_data = b""
+            if not type(ip) == str: raise TypeError("Invalid IP address")
+            octets = ip.split(".")
+            if not len(octets) == 4: raise ValueError("Invalid IP address length")
+            try:
+                for i in range(0, 4):
+                    octet = int(octets[i])
+                    if octet < 0 or octet > 255: raise ValueError("Invalid IP octet value")
+                    else: ip_data += bytes([octet])
+            except Exception as e:
+                raise ValueError(f"Could not decode IP address octet: {e}")
+        
+        data = KISS.escape(ip_data)
+        kiss_command = bytes([KISS.FEND])+bytes([KISS.CMD_WIFI_IP])+data+bytes([KISS.FEND])
+
+        written = self.serial.write(kiss_command)
+        if written != len(kiss_command): raise IOError("An IO error occurred while sending wifi IP address to device")
+
+    def set_wifi_nm(self, nm):
+        if nm == None: nm_data = bytes([0x00, 0x00, 0x00, 0x00])
+        else:
+            nm_data = b""
+            if not type(nm) == str: raise TypeError("Invalid IP address")
+            octets = nm.split(".")
+            if not len(octets) == 4: raise ValueError("Invalid IP address length")
+            try:
+                for i in range(0, 4):
+                    octet = int(octets[i])
+                    if octet < 0 or octet > 255: raise ValueError("Invalid IP octet value")
+                    else: nm_data += bytes([octet])
+            except Exception as e:
+                raise ValueError(f"Could not decode IP address octet: {e}")
+        
+        data = KISS.escape(nm_data)
+        kiss_command = bytes([KISS.FEND])+bytes([KISS.CMD_WIFI_NM])+data+bytes([KISS.FEND])
+
+        written = self.serial.write(kiss_command)
+        if written != len(kiss_command): raise IOError("An IO error occurred while sending wifi netmask to device")
+
+    def set_wifi_ssid(self, ssid):
+        if ssid == None: data = bytes([0x00])
+        else:
+            ssid_data = ssid.encode("utf-8")+bytes([0x00])
+            if len(ssid_data) < 0 or len(ssid_data) > 33: raise ValueError("Invalid SSID length")
+            data = KISS.escape(ssid_data)
+
+        kiss_command = bytes([KISS.FEND])+bytes([KISS.CMD_WIFI_SSID])+data+bytes([KISS.FEND])
+
+        written = self.serial.write(kiss_command)
+        if written != len(kiss_command):
+            raise IOError("An IO error occurred while sending wifi SSID to device")
+
+    def set_wifi_psk(self, psk):
+        if psk == None: data = bytes([0x00])
+        else:
+            psk_data = psk.encode("utf-8")+bytes([0x00])
+            if len(psk_data) < 8 or len(psk_data) > 33: raise ValueError("Invalid psk length")
+            data = KISS.escape(psk_data)
+        
+        kiss_command = bytes([KISS.FEND])+bytes([KISS.CMD_WIFI_PSK])+data+bytes([KISS.FEND])
+
+        written = self.serial.write(kiss_command)
+        if written != len(kiss_command):
+            raise IOError("An IO error occurred while sending wifi SSID to device")
+
     def initRadio(self):
         self.setFrequency()
         self.setBandwidth()
@@ -888,7 +1010,7 @@ class RNode():
         kiss_command = bytes([KISS.FEND, KISS.CMD_ROM_READ, 0x00, KISS.FEND])
         written = self.serial.write(kiss_command)
         if written != len(kiss_command):
-            raise IOError("An IO error occurred while configuring radio state")
+            raise IOError("An IO error occurred while downloading EEPROM")
 
         sleep(0.6)
         if self.eeprom == None:
@@ -896,6 +1018,15 @@ class RNode():
             graceful_exit()
         else:
             self.parse_eeprom()
+
+    def download_cfg_sector(self):
+        self.cfg_sector = None
+        kiss_command = bytes([KISS.FEND, KISS.CMD_CFG_READ, 0x00, KISS.FEND])
+        written = self.serial.write(kiss_command)
+        if written != len(kiss_command):
+            raise IOError("An IO error occurred while downloading config sector")
+
+        sleep(0.6)
 
     def parse_eeprom(self):
         global squashvw;
@@ -1054,8 +1185,8 @@ class RNode():
                             print("     Always use a firmware downloaded as binaries or compiled from source")
                             print("     from one of the following locations:")
                             print("     ")
-                            print("        https://unsigned.io/rnode")
                             print("        https://github.com/markqvist/rnode_firmware")
+                            print("        https://github.com/liberatedsystems/RNode_Firmware_CE")
                             print("     ")
                             print("     You can reflash and bootstrap this device to a verifiable state")
                             print("     by using this utility. It is recommended to do so NOW!")
@@ -1097,7 +1228,7 @@ class RNode():
 
 selected_version = None
 selected_hash = None
-firmware_version_url = "https://unsigned.io/firmware/latest/?v="+program_version+"&variant="
+firmware_version_url          = "https://github.com/markqvist/rnode_firmware/releases/latest/download/release.json"
 fallback_firmware_version_url = "https://github.com/markqvist/rnode_firmware/releases/latest/download/release.json"
 def ensure_firmware_file(fw_filename):
     global selected_version, selected_hash, upd_nocheck
@@ -1138,9 +1269,15 @@ def ensure_firmware_file(fw_filename):
                 try:
                     # if custom firmware url, download latest release
                     if selected_version == None and fw_url == None:
-                        version_url = firmware_version_url+fw_filename
-                        RNS.log("Retrieving latest version info from "+version_url)
-                        urlretrieve(firmware_version_url+fw_filename, UPD_DIR+"/"+fw_filename+".version.latest")
+                        urlretrieve(firmware_version_url, UPD_DIR+"/release_info.json")
+                        import json
+                        with open(UPD_DIR+"/release_info.json", "rb") as rif:
+                            rdat = json.loads(rif.read())
+                            variant = rdat[fw_filename]
+                            with open(UPD_DIR+"/"+fw_filename+".version.latest", "wb") as verf:
+                                inf_str = str(variant["version"])+" "+str(variant["hash"])
+                                verf.write(inf_str.encode("utf-8"))
+
                     else:
                         if fw_url != None:
                             if selected_version == None:
@@ -1359,6 +1496,14 @@ def main():
         parser.add_argument("-B", "--bluetooth-off", action="store_true", help="Turn device bluetooth off")
         parser.add_argument("-p", "--bluetooth-pair", action="store_true", help="Put device into bluetooth pairing mode")
 
+        parser.add_argument("-w", "--wifi", action="store", metavar="mode", default=None, help="Set WiFi mode (OFF, AP or STATION)")
+        parser.add_argument("--channel", action="store", metavar="channel", default=None, help="Set WiFi channel")
+        parser.add_argument("--ssid", action="store", metavar="ssid", default=None, help="Set WiFi SSID (NONE to delete)")
+        parser.add_argument("--psk", action="store", metavar="psk", default=None, help="Set WiFi PSK (NONE to delete)")
+        parser.add_argument("--show-psk", action="store_true", default=False, help="Display stored WiFi PSK")
+        parser.add_argument("--ip", action="store", metavar="ip", default=None, help="Set static WiFi IP address (NONE for DHCP)")
+        parser.add_argument("--nm", action="store", metavar="nm", default=None, help="Set static WiFi network mask (NONE for DHCP)")
+
         parser.add_argument("-D", "--display", action="store", metavar="i", type=int, default=None, help="Set display intensity (0-255)")
         parser.add_argument("-t", "--timeout", action="store", metavar="s", type=int, default=None, help="Set display timeout in seconds, 0 to disable")
         parser.add_argument("-R", "--rotation", action="store", metavar="rotation", type=int, default=None, help="Set display rotation, valid values are 0 through 3")
@@ -1403,13 +1548,14 @@ def main():
         args = parser.parse_args()
 
         def print_donation_block():
-            print("  Ethereum : "+eth_addr)
-            print("  Bitcoin  : "+btc_addr)
-            print("  Monero   : "+xmr_addr)
-            print("  Ko-Fi    : https://ko-fi.com/markqvist")
+            print("  Ethereum  : "+eth_addr)
+            print("  Bitcoin   : "+btc_addr)
+            print("  Monero    : "+xmr_addr)
+            print("  Ko-Fi     : https://ko-fi.com/markqvist")
+            print("  LiberaPay : https://liberapay.com/reticulum")
             print("")
-            print("  Info     : https://unsigned.io/")
-            print("  Code     : https://github.com/markqvist")
+            print("  Info      : https://reticulum.network")
+            print("  Code      : https://github.com/markqvist")
 
         if args.version:
             print("rnodeconf "+program_version)
@@ -1730,13 +1876,14 @@ def main():
             print("[6]  LilyGO T-Beam")
             print("[7]  Heltec LoRa32 v2")
             print("[8]  Heltec LoRa32 v3")
-            print("[9]  LilyGO LoRa T3S3")
-            print("[10] RAK4631")
-            print("[11] LilyGo T-Echo")
-            print("[12] LilyGO T-Beam Supreme")
-            print("[13] LilyGO T-Deck")
-            print("[14] Heltec T114")
-            print("[15] Seeed XIAO ESP32S3 Wio-SX1262")
+            print("[9]  Heltec LoRa32 v4")
+            print("[10] LilyGO LoRa T3S3")
+            print("[11] RAK4631")
+            print("[12] LilyGo T-Echo")
+            print("[13] LilyGO T-Beam Supreme")
+            print("[14] LilyGO T-Deck")
+            print("[15] Heltec T114")
+            print("[16] Seeed XIAO ESP32S3 Wio-SX1262")
             print("")
             print("---------------------------------------------------------------------------")
             print("\nEnter the number that matches your device type:\n? ", end="")
@@ -1745,7 +1892,7 @@ def main():
             try:
                 c_dev = int(input())
                 c_mod = False
-                if c_dev < 1 or c_dev > 15:
+                if c_dev < 1 or c_dev > 16:
                     raise ValueError()
                 elif c_dev == 1:
                     selected_product = ROM.PRODUCT_RNODE
@@ -1782,7 +1929,7 @@ def main():
                     print("who would like to experiment with it. Hit enter to continue.")
                     print("---------------------------------------------------------------------------")
                     input()
-                elif c_dev == 12:
+                elif c_dev == 13:
                     selected_product = ROM.PRODUCT_TBEAM_S_V1
                     clear()
                     print("")
@@ -1798,7 +1945,7 @@ def main():
                     print("who would like to experiment with it. Hit enter to continue.")
                     print("---------------------------------------------------------------------------")
                     input()
-                elif c_dev == 13:
+                elif c_dev == 14:
                     selected_product = ROM.PRODUCT_TDECK
                     clear()
                     print("")
@@ -1873,7 +2020,7 @@ def main():
                     print("who would like to experiment with it. Hit enter to continue.")
                     print("---------------------------------------------------------------------------")
                     input()
-                elif c_dev == 9:
+                elif c_dev == 10:
                     selected_product = ROM.PRODUCT_RNODE
                     c_mod = True
                     clear()
@@ -1902,7 +2049,21 @@ def main():
                     print("who would like to experiment with it. Hit enter to continue.")
                     print("---------------------------------------------------------------------------")
                     input()
-                elif c_dev == 10:
+                elif c_dev == 9:
+                    selected_product = ROM.PRODUCT_H32_V4
+                    clear()
+                    print("")
+                    print("---------------------------------------------------------------------------")
+                    print("                      Heltec LoRa32 v4 RNode Installer")
+                    print("")
+                    print("Important! Using RNode firmware on Heltec devices should currently be")
+                    print("considered experimental. It is not intended for production or critical use.")
+                    print("")
+                    print("The currently supplied firmware is provided AS-IS as a courtesy to those")
+                    print("who would like to experiment with it. Hit enter to continue.")
+                    print("---------------------------------------------------------------------------")
+                    input()
+                elif c_dev == 11:
                     selected_product = ROM.PRODUCT_RAK4631
                     clear()
                     print("")
@@ -1915,7 +2076,7 @@ def main():
                     print("who would like to experiment with it. Hit enter to continue.")
                     print("---------------------------------------------------------------------------")
                     input()
-                elif c_dev == 11:
+                elif c_dev == 12:
                     selected_product = ROM.PRODUCT_TECHO
                     clear()
                     print("")
@@ -1928,7 +2089,7 @@ def main():
                     print("who would like to experiment with it. Hit enter to continue.")
                     print("---------------------------------------------------------------------------")
                     input()
-                elif c_dev == 14:
+                elif c_dev == 15:
                     selected_product = ROM.PRODUCT_HELTEC_T114
                     clear()
                     print("")
@@ -1941,7 +2102,7 @@ def main():
                     print("who would like to experiment with it. Hit enter to continue.")
                     print("---------------------------------------------------------------------------")
                     input()
-                elif c_dev == 15:
+                elif c_dev == 16:
                     selected_product = ROM.PRODUCT_XIAO_S3
                     clear()
                     print("")
@@ -2264,6 +2425,7 @@ def main():
                 print("[2] 868 MHz")
                 print("[3] 915 MHz")
                 print("[4] 923 MHz")
+                print("\n? ", end="")
                 try:
                     c_model = int(input())
                     if c_model < 1 or c_model > 4:
@@ -2278,6 +2440,24 @@ def main():
                     print("That band does not exist, exiting now.")
                     exit()
             
+            elif selected_product == ROM.PRODUCT_H32_V4:
+                selected_mcu = ROM.MCU_ESP32
+                print("\nWhat band is this Heltec LoRa32 V4 for?\n")
+                print("[1] 868 MHz (28 dBm output)")
+                print("[2] 915 MHz (28 dBm output)")
+                print("[3] 923 MHz (28 dBm output)")
+                print("\n? ", end="")
+                try:
+                    c_model = int(input())
+                    if c_model < 1 or c_model > 3:
+                        raise ValueError()
+                    else:
+                        selected_model = ROM.MODEL_C8
+                        selected_platform = ROM.PLATFORM_ESP32
+                except Exception as e:
+                    print("That band does not exist, exiting now.")
+                    exit()
+            
             elif selected_product == ROM.PRODUCT_HELTEC_T114:
                 selected_mcu = ROM.MCU_NRF52
                 print("\nWhat band is this Heltec T114 for?\n")
@@ -2285,6 +2465,7 @@ def main():
                 print("[2] 868 MHz")
                 print("[3] 915 MHz")
                 print("[4] 923 MHz")
+                print("\n? ", end="")
                 try:
                     c_model = int(input())
                     if c_model < 1 or c_model > 4:
@@ -2304,6 +2485,7 @@ def main():
                 print("\nWhat band is this XIAO esp32s3 wio module for?\n")
                 print("[1] 433 MHz")
                 print("[2] 868 MHz")
+                print("\n? ", end="")
                 try:
                     c_model = int(input())
                     if c_model < 1 or c_model > 2:
@@ -2874,6 +3056,24 @@ def main():
                             "0x10000", UPD_DIR+"/"+selected_version+"/rnode_firmware_heltec32v3.bin",
                             "0x210000",UPD_DIR+"/"+selected_version+"/console_image.bin",
                             "0x8000",  UPD_DIR+"/"+selected_version+"/rnode_firmware_heltec32v3.partitions",
+                        ]
+                    elif fw_filename == "rnode_firmware_heltec32v4pa.zip":
+                        return [
+                            sys.executable, flasher,
+                            "--chip", "esp32-s3",
+                            "--port", args.port,
+                            "--baud", args.baud_flash,
+                            "--before", "default_reset",
+                            "--after", "hard_reset",
+                            "write_flash", "-z",
+                            "--flash_mode", "dio",
+                            "--flash_freq", "80m",
+                            "--flash_size", "16MB",
+                            "0xe000",  UPD_DIR+"/"+selected_version+"/rnode_firmware_heltec32v4pa.boot_app0",
+                            "0x0",     UPD_DIR+"/"+selected_version+"/rnode_firmware_heltec32v4pa.bootloader",
+                            "0x10000", UPD_DIR+"/"+selected_version+"/rnode_firmware_heltec32v4pa.bin",
+                            "0x210000",UPD_DIR+"/"+selected_version+"/console_image.bin",
+                            "0x8000",  UPD_DIR+"/"+selected_version+"/rnode_firmware_heltec32v4pa.partitions",
                         ]
                     elif fw_filename == "rnode_firmware_featheresp32.zip":
                         if numeric_version >= 1.55:
@@ -3498,17 +3698,14 @@ def main():
                     graceful_exit()
 
             if args.config:
+                rnode.download_cfg_sector()
                 eeprom_reserved = 200
-                if rnode.platform == ROM.PLATFORM_ESP32:
-                    eeprom_size = 296
-                elif rnode.platform == ROM.PLATFORM_NRF52:
-                    eeprom_size = 296
-                else:
-                    eeprom_size = 4096
+                if rnode.platform == ROM.PLATFORM_ESP32: eeprom_size = 296
+                elif rnode.platform == ROM.PLATFORM_NRF52: eeprom_size = 296
+                else: eeprom_size = 4096
 
                 eeprom_offset = eeprom_size-eeprom_reserved
-                def ea(a):
-                    return a+eeprom_offset
+                def ea(a): return a+eeprom_offset
                 ec_bt   = rnode.eeprom[ROM.ADDR_CONF_BT]
                 ec_dint = rnode.eeprom[ROM.ADDR_CONF_DINT]
                 ec_dadr = rnode.eeprom[ROM.ADDR_CONF_DADR]
@@ -3518,40 +3715,89 @@ def main():
                 ec_pint = rnode.eeprom[ROM.ADDR_CONF_PINT]
                 ec_bset = rnode.eeprom[ROM.ADDR_CONF_BSET]
                 ec_dia  = rnode.eeprom[ROM.ADDR_CONF_DIA]
+                ec_wifi = rnode.eeprom[ROM.ADDR_CONF_WIFI]
+                ec_wchn = rnode.eeprom[ROM.ADDR_CONF_WCHN]
+                ec_ssid = None
+                ec_psk  = None
+                ec_ip   = None
+                ec_nm   = None
+
+                if ec_wchn < 1 or ec_wchn > 14: ec_wchn = 1
+                if rnode.cfg_sector:
+                    ssid_bytes = b""
+                    for i in range(0, 32):
+                        byte = rnode.cfg_sector[ROM.ADDR_CONF_SSID+i]
+                        if byte == 0xFF: byte = 0x00
+                        if byte == 0x00: break
+                        else: ssid_bytes += bytes([byte])
+
+                    try: ec_ssid = ssid_bytes.decode("utf-8")
+                    except Exception as e: print(f"Error: Could not decode WiFi SSID read from device")
+
+                    psk_bytes = b""
+                    for i in range(0, 32):
+                        byte = rnode.cfg_sector[ROM.ADDR_CONF_PSK+i]
+                        if byte == 0xFF: byte = 0x00
+                        if byte == 0x00: break
+                        else: psk_bytes += bytes([byte])
+
+                    ip_bytes = b""
+                    for i in range(0, 4):
+                        byte = rnode.cfg_sector[ROM.ADDR_CONF_IP+i]
+                        ip_bytes += bytes([byte])
+                    if len(ip_bytes) == 4: ec_ip = f"{int(ip_bytes[0])}.{int(ip_bytes[1])}.{int(ip_bytes[2])}.{int(ip_bytes[3])}"
+                    if ec_ip == "255.255.255.255" or ec_ip == "0.0.0.0": ec_ip = None
+
+                    nm_bytes = b""
+                    for i in range(0, 4):
+                        byte = rnode.cfg_sector[ROM.ADDR_CONF_NM+i]
+                        nm_bytes += bytes([byte])
+                    if len(nm_bytes) == 4: ec_nm = f"{int(nm_bytes[0])}.{int(nm_bytes[1])}.{int(nm_bytes[2])}.{int(nm_bytes[3])}"
+                    if ec_nm == "255.255.255.255" or ec_nm == "0.0.0.0": ec_nm = None
+
+                    if ec_wifi == 0x02:
+                        ec_ip = "10.0.0.1"
+                        ec_nm = "255.255.255.0"
+
+                    try: ec_psk = psk_bytes.decode("utf-8")
+                    except Exception as e: print(f"Error: Could not decode WiFi PSK read from device")
+                    if not args.show_psk and ec_psk: ec_psk = "*"*len(ec_psk)
+
                 print("\nDevice configuration:")
-                if ec_bt == 0x73:
-                    print(f"  Bluetooth              : Enabled")
-                else:
-                    print(f"  Bluetooth              : Disabled")
-                if ec_dia == 0x00:
-                    print(f"  Interference avoidance : Enabled")
-                else:
-                    print(f"  Interference avoidance : Disabled")
+                if ec_bt == 0x73:       print(f"  Bluetooth              : Enabled")
+                else:                   print(f"  Bluetooth              : Disabled")
+                if ec_wifi == 0x01:     print(f"  WiFi                   : Enabled (Station)")
+                if ec_wifi == 0x02:     print(f"  WiFi                   : Enabled (AP)")
+                else:                   print(f"  WiFi                   : Disabled")
+                if ec_wifi == 0x01 or ec_wifi == 0x02:
+                    if not ec_wchn:     print(f"    Channel              : Unknown")
+                    else:               print(f"    Channel              : {ec_wchn}")
+                    if not ec_ssid:     print(f"    SSID                 : Not set")
+                    else:               print(f"    SSID                 : {ec_ssid}")
+                    if not ec_psk:      print(f"    PSK                  : Not set")
+                    else:               print(f"    PSK                  : {ec_psk}")
+                    if not ec_ip:       print(f"    IP Address           : DHCP")
+                    else:               print(f"    IP Address           : {ec_ip}")
+                    if ec_ip and ec_nm: print(f"    Network Mask         : {ec_nm}")
+                if ec_dia == 0x00:      print(f"  Interference avoidance : Enabled")
+                else:                   print(f"  Interference avoidance : Disabled")
                 print(    f"  Display brightness     : {ec_dint}")
-                if ec_dadr == 0xFF:
-                    print(f"  Display address        : Default")
-                else:
-                    print(f"  Display address        : {RNS.hexrep(ec_dadr, delimit=False)}")
-                if ec_bset == 0x73 and ec_dblk != 0x00:
-                    print(f"  Display blanking       : {ec_dblk}s")
-                else:
-                    print(f"  Display blanking       : Disabled")
+                if ec_dadr == 0xFF:     print(f"  Display address        : Default")
+                else:                   print(f"  Display address        : {RNS.hexrep(ec_dadr, delimit=False)}")
+                if ec_bset == 0x73 and ec_dblk != 0x00: print(f"  Display blanking       : {ec_dblk}s")
+                else:                                   print(f"  Display blanking       : Disabled")
                 if ec_drot != 0xFF:
-                    if ec_drot == 0x00:
-                        rstr = "Landscape"
-                    if ec_drot == 0x01:
-                        rstr = "Portrait"
-                    if ec_drot == 0x02:
-                        rstr = "Landscape 180"
-                    if ec_drot == 0x03:
-                        rstr = "Portrait 180"
+                    if ec_drot == 0x00: rstr = "Landscape"
+                    if ec_drot == 0x01: rstr = "Portrait"
+                    if ec_drot == 0x02: rstr = "Landscape 180"
+                    if ec_drot == 0x03: rstr = "Portrait 180"
                     print(f"  Display rotation       : {rstr}")
                 else:
                     print(f"  Display rotation       : Default")
-                if ec_pset == 0x73:
-                    print(f"  Neopixel Intensity     : {ec_pint}")
+                if ec_pset == 0x73: print(f"  Neopixel Intensity     : {ec_pint}")
                 print("")
 
+                rnode.leave()
                 graceful_exit()
 
             if args.eeprom_dump:
@@ -3661,6 +3907,77 @@ def main():
                 rnode.bluetooth_pair()
                 input()
                 rnode.leave()
+
+            if args.channel:
+                try:
+                    RNS.log(f"Setting WiFi channel to {args.channel}")
+                    rnode.set_wifi_channel(args.channel)
+                except Exception as e:
+                    print(f"Could not set WiFi channel: {e}")
+                    graceful_exit()
+
+            if args.ssid:
+                try:
+                    if args.ssid.lower() == "none":
+                        ssid_str = None
+                        RNS.log(f"Deleting WiFi SSID")
+                    else:
+                        ssid_str = str(args.ssid)
+                        RNS.log(f"Setting WiFi SSID to: {ssid_str}")
+                    rnode.set_wifi_ssid(ssid_str)
+                except Exception as e:
+                    print(f"Could not set WiFi SSID: {e}")
+                    graceful_exit()
+
+            if args.psk:
+                try:
+                    if args.psk.lower() == "none":
+                        psk_str = None
+                        RNS.log(f"Deleting WiFi PSK")
+                    else:
+                        psk_str = str(args.psk)
+                        RNS.log(f"Setting WiFi PSK")
+                    rnode.set_wifi_psk(psk_str)
+                except Exception as e:
+                    print(f"Could not set WiFi PSK: {e}")
+                    graceful_exit()
+
+            if args.ip:
+                try:
+                    if args.ip.lower() == "none":
+                        RNS.log(f"Setting WiFi IP to DHCP...")
+                        rnode.set_wifi_ip(None)
+                    else:
+                        RNS.log(f"Setting WiFi static IP to: {args.ip}")
+                        rnode.set_wifi_ip(args.ip)
+                except Exception as e:
+                    print(f"Could not set WiFi IP: {e}")
+                    graceful_exit()
+
+            if args.nm:
+                try:
+                    if args.nm.lower() == "none":
+                        RNS.log(f"Deleting WiFi static netmask configuration...")
+                        rnode.set_wifi_nm(None)
+                    else:
+                        RNS.log(f"Setting WiFi static netmask to: {args.nm}")
+                        rnode.set_wifi_nm(args.nm)
+                except Exception as e:
+                    print(f"Could not set WiFi netmask: {e}")
+                    graceful_exit()
+
+            if args.wifi:
+                try:
+                    mode = 0x00
+                    if   str(args.wifi).lower().startswith("sta"): mode = 0x01
+                    elif str(args.wifi).lower().startswith("ap"):  mode = 0x02
+                    if mode == 0x00: RNS.log(f"Disabling WiFi...")
+                    elif mode == 0x01: RNS.log(f"Setting WiFi to station mode")
+                    elif mode == 0x02: RNS.log(f"Setting WiFi to AP mode")
+                    rnode.set_wifi_mode(mode)
+                except Exception as e:
+                    print(f"Could not set WiFi mode: {e}")
+                    graceful_exit()
 
             if args.info:
                 if rnode.provisioned:
@@ -4036,8 +4353,8 @@ def main():
                                     print("cases, and copies of the source code for both the RNode Firmware,")
                                     print("Reticulum and other utilities.")
                                     print("")
-                                    print("To activate the RNode Bootstrap Console, power up your RNode and press")
-                                    print("the reset button twice with a one second interval. The RNode will now")
+                                    print("To activate the RNode Bootstrap Console, power up your RNode and hold")
+                                    print("down the user button for 10+ seconds, then release. The RNode will now")
                                     print("reboot into console mode, and activate a WiFi access point for you to")
                                     print("connect to. The console is then reachable at: http://10.0.0.1")
                                     print("")

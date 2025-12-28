@@ -1367,22 +1367,27 @@ class Transport:
                                 
                                 path_mtu       = RNS.Link.mtu_from_lr_packet(packet)
                                 mode           = RNS.Link.mode_from_lr_packet(packet)
+                                ph_mtu         = interface.HW_MTU if interface else None
                                 nh_mtu         = outbound_interface.HW_MTU
                                 if path_mtu:
+                                    # TODO: Remove debug
+                                    # RNS.log(f"PATH_MTU: {path_mtu}")
+                                    # RNS.log(f"PH_MTU: {ph_mtu}")
+                                    # RNS.log(f"NH_MTU: {nh_mtu}")
                                     if outbound_interface.HW_MTU == None:
-                                        RNS.log(f"No next-hop HW MTU, disabling link MTU upgrade", RNS.LOG_DEBUG) # TODO: Remove debug
+                                        RNS.log(f"No next-hop HW MTU, disabling link MTU upgrade", RNS.LOG_DEBUG)
                                         path_mtu = None
                                         new_raw  = new_raw[:-RNS.Link.LINK_MTU_SIZE]
                                     elif not outbound_interface.AUTOCONFIGURE_MTU and not outbound_interface.FIXED_MTU:
-                                        RNS.log(f"Outbound interface doesn't support MTU autoconfiguration, disabling link MTU upgrade", RNS.LOG_DEBUG) # TODO: Remove debug
+                                        RNS.log(f"Outbound interface doesn't support MTU autoconfiguration, disabling link MTU upgrade", RNS.LOG_DEBUG)
                                         path_mtu = None
                                         new_raw  = new_raw[:-RNS.Link.LINK_MTU_SIZE]
                                     else:
-                                        if nh_mtu < path_mtu:
+                                        if nh_mtu < path_mtu or (ph_mtu and ph_mtu < path_mtu):
                                             try:
-                                                path_mtu = nh_mtu
+                                                path_mtu = min(nh_mtu, ph_mtu)
                                                 clamped_mtu = RNS.Link.signalling_bytes(path_mtu, mode)
-                                                RNS.log(f"Clamping link MTU to {RNS.prettysize(nh_mtu)}", RNS.LOG_DEBUG) # TODO: Remove debug
+                                                RNS.log(f"Clamping link MTU to {RNS.prettysize(path_mtu)}", RNS.LOG_DEBUG)
                                                 new_raw  = new_raw[:-RNS.Link.LINK_MTU_SIZE]+clamped_mtu
                                             except Exception as e:
                                                 RNS.log(f"Dropping link request packet. The contained exception was: {e}", RNS.LOG_WARNING)
@@ -1824,6 +1829,13 @@ class Transport:
                                                                       announced_identity=announce_identity,
                                                                       app_data=RNS.Identity.recall_app_data(packet.destination_hash),
                                                                       announce_packet_hash = packet.packet_hash)
+                                        
+                                        elif len(inspect.signature(handler.received_announce).parameters) == 5:
+                                            handler.received_announce(destination_hash=packet.destination_hash,
+                                                                      announced_identity=announce_identity,
+                                                                      app_data=RNS.Identity.recall_app_data(packet.destination_hash),
+                                                                      announce_packet_hash = packet.packet_hash,
+                                                                      is_path_response = packet.context == RNS.Packet.PATH_RESPONSE)
                                         else:
                                             raise TypeError("Invalid signature for announce handler callback")
 
@@ -2126,7 +2138,10 @@ class Transport:
 
             if Transport.owner.is_connected_to_shared_instance:
                 if destination.type == RNS.Destination.SINGLE:
-                    destination.announce(path_response=True)
+                    def job():
+                        time.sleep(0.25)
+                        destination.announce(path_response=True)
+                    threading.Thread(target=job, daemon=True).start()
 
     @staticmethod
     def deregister_destination(destination):
@@ -2159,9 +2174,10 @@ class Transport:
         Registers an announce handler.
 
         :param handler: Must be an object with an *aspect_filter* attribute and a *received_announce(destination_hash, announced_identity, app_data)*
-                        or *received_announce(destination_hash, announced_identity, app_data, announce_packet_hash)* callable. Can optionally have a
-                        *receive_path_responses* attribute set to ``True``, to also receive all path responses, in addition to live announces. See
-                        the :ref:`Announce Example<example-announce>` for more info.
+                        or *received_announce(destination_hash, announced_identity, app_data, announce_packet_hash)* or
+                        *received_announce(destination_hash, announced_identity, app_data, announce_packet_hash, is_path_response)* callable. Can
+                        optionally have a *receive_path_responses* attribute set to ``True``, to also receive all path responses, in addition to live
+                        announces. See the :ref:`Announce Example<example-announce>` for more info.
         """
         if hasattr(handler, "received_announce") and callable(handler.received_announce):
             if hasattr(handler, "aspect_filter"):

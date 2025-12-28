@@ -32,6 +32,7 @@ from RNS.Interfaces.Interface import Interface
 from time import sleep
 import sys
 import threading
+import socket
 import time
 import math
 import RNS
@@ -73,6 +74,7 @@ class KISS():
     CMD_STAT_PHYPRM = 0x26
     CMD_STAT_BAT    = 0x27
     CMD_STAT_CSMA   = 0x28
+    CMD_STAT_TEMP   = 0x29
     CMD_BLINK       = 0x30
     CMD_RANDOM      = 0x40
     CMD_FB_EXT      = 0x41
@@ -363,7 +365,9 @@ class RNodeInterface(Interface):
         target_device_address = c["target_device_address"] if "target_device_address" in c else None
         ble_name = c["ble_name"] if "ble_name" in c else None
         ble_addr = c["ble_addr"] if "ble_addr" in c else None
+        tcp_host = c["tcp_host"] if "tcp_host" in c else None
         force_ble = c["force_ble"] if "force_ble" in c else False
+        force_tcp = c["force_tcp"] if "force_tcp" in c else False
         frequency = int(c["frequency"]) if "frequency" in c else 0
         bandwidth = int(c["bandwidth"]) if "bandwidth" in c else 0
         txpower = int(c["txpower"]) if "txpower" in c else 0
@@ -435,6 +439,14 @@ class RNodeInterface(Interface):
         self.ble_rx_queue= b""
         self.ble_tx_queue= b""
 
+        self.tcp         = None
+        self.use_tcp     = False
+        self.tcp_host    = tcp_host
+        self.tcp_rx_queue= b""
+        self.tcp_tx_queue= b""
+        self.tcp_rx_lock = threading.Lock()
+        self.tcp_tx_lock = threading.Lock()
+
         self.frequency   = frequency
         self.bandwidth   = bandwidth
         self.txpower     = txpower
@@ -444,6 +456,7 @@ class RNodeInterface(Interface):
         self.bitrate     = 0
         self.st_alock    = st_alock
         self.lt_alock    = lt_alock
+        self.cpu_temp    = None
         self.platform    = None
         self.display     = None
         self.mcu         = None
@@ -456,6 +469,7 @@ class RNodeInterface(Interface):
         self.first_tx    = None
         self.reconnect_w = RNodeInterface.RECONNECT_WAIT
         self.reconnect_lock = threading.Lock()
+        self.awaiting_ble_reset = False
 
         self.r_frequency = None
         self.r_bandwidth = None
@@ -486,6 +500,9 @@ class RNodeInterface(Interface):
         self.r_csma_cw_max        = None
         self.r_current_rssi       = None
         self.r_noise_floor        = None
+        self.r_interference       = None
+        self.r_interference_l     = None
+        self.r_temperature        = None
 
         self.r_battery_state = RNodeInterface.BATTERY_STATE_UNKNOWN
         self.r_battery_percent = 0
@@ -507,15 +524,15 @@ class RNodeInterface(Interface):
         self.port_io_timeout = RNodeInterface.PORT_IO_TIMEOUT
         self.last_imagedata = None
 
-        if force_ble or self.ble_addr != None or self.ble_name != None:
-            self.use_ble = True
+        if force_ble or self.ble_addr != None or self.ble_name != None: self.use_ble = True
+        if force_tcp or self.tcp_host != None:                          self.use_tcp = True
 
         self.validcfg  = True
         if (self.frequency < RNodeInterface.FREQ_MIN or self.frequency > RNodeInterface.FREQ_MAX):
             RNS.log("Invalid frequency configured for "+str(self), RNS.LOG_ERROR)
             self.validcfg = False
 
-        if (self.txpower < 0 or self.txpower > 22):
+        if (self.txpower < 0 or self.txpower > 37):
             RNS.log("Invalid TX power configured for "+str(self), RNS.LOG_ERROR)
             self.validcfg = False
 
@@ -558,10 +575,8 @@ class RNodeInterface(Interface):
             self.open_port()
 
             if self.serial != None:
-                if self.serial.is_open:
-                    self.configure_device()
-                else:
-                    raise IOError("Could not open serial port")
+                if self.serial.is_open: self.configure_device()
+                else: raise IOError("Could not open serial port")
             elif self.bt_manager != None:
                 if self.bt_manager.connected:
                     self.configure_device()
@@ -579,12 +594,9 @@ class RNodeInterface(Interface):
 
 
     def read_mux(self, len=None):
-        if self.serial != None:
-            return self.serial.read()
-        elif self.bt_manager != None:
-            return self.bt_manager.read()
-        else:
-            raise IOError("No ports available for reading")
+        if self.serial != None: return self.serial.read()
+        elif self.bt_manager != None: return self.bt_manager.read()
+        else: raise IOError("No ports available for reading")
 
     def write_mux(self, data):
         if self.serial != None:
@@ -599,17 +611,19 @@ class RNodeInterface(Interface):
         else:
             raise IOError("No ports available for writing")
 
-    # def reset_ble(self):
-    #     RNS.log(f"Clearing previous connection instance: "+str(self.ble))
-    #     del self.ble
-    #     self.ble = None
-    #     self.serial = None
-    #     self.ble = BLEConnection(owner=self, target_name=self.ble_name, target_bt_addr=self.ble_addr)
-    #     self.serial = self.ble
-    #     RNS.log(f"New connection instance: "+str(self.ble))
+    def reset_ble(self):
+        if not self.awaiting_ble_reset: return
+        else:
+            RNS.log(f"Clearing previous connection instance: "+str(self.ble), RNS.LOG_DEBUG)
+            self.ble = None
+            self.serial = None
+            self.ble = BLEConnection(owner=self, target_name=self.ble_name, target_bt_addr=self.ble_addr)
+            self.serial = self.ble
+            self.awaiting_ble_reset = False
+            RNS.log(f"New connection instance: "+str(self.ble), RNS.LOG_DEBUG)
         
     def open_port(self):
-        if not self.use_ble:
+        if not self.use_ble and not self.use_tcp:
             if self.port != None:
                 RNS.log("Opening serial port "+self.port+"...")
                 # Get device parameters
@@ -677,7 +691,7 @@ class RNodeInterface(Interface):
                 if self.bt_manager != None:
                     self.bt_manager.connect_any_device()
 
-        else:
+        elif self.use_ble:
             if self.ble == None:
                 self.ble = BLEConnection(owner=self, target_name=self.ble_name, target_bt_addr=self.ble_addr)
                 self.serial = self.ble
@@ -686,6 +700,24 @@ class RNodeInterface(Interface):
             while not self.ble.connected and time.time() < open_time + self.ble.CONNECT_TIMEOUT:
                 time.sleep(1)
 
+        elif self.use_tcp:
+            RNS.log(f"Opening TCP connection for {self}...")
+            if self.tcp != None and self.tcp.running == False:
+                self.tcp.close()
+                self.tcp.cleanup()
+                self.tcp = None
+
+            if self.tcp == None:
+                self.tcp = TCPConnection(owner=self, target_host=self.tcp_host)
+                self.serial = self.tcp
+
+            open_time = time.time()
+            while not self.tcp.connected and time.time() < open_time + self.tcp.CONNECT_TIMEOUT:
+                time.sleep(1)
+
+        else:
+            raise TypeError("No valid device connection type defined for RNode interface")
+
 
     def configure_device(self):
         self.resetRadioState()
@@ -693,17 +725,19 @@ class RNodeInterface(Interface):
         thread = threading.Thread(target=self.readLoop, daemon=True).start()
 
         self.detect()
-        if not self.use_ble:
-            sleep(0.5)
-        else:
+        if self.use_tcp:
+            tcp_detect_timeout = 5.0
+            detect_time = time.time()
+            while not self.detected and time.time() < detect_time + tcp_detect_timeout: time.sleep(0.1)
+            if not self.detected: RNS.log(f"RNode detect timed out over TCP", RNS.LOG_ERROR)
+        elif self.use_ble:
             ble_detect_timeout = 5
             detect_time = time.time()
-            while not self.detected and time.time() < detect_time + ble_detect_timeout:
-                time.sleep(0.1)
-            if self.detected:
-                detect_time = RNS.prettytime(time.time()-detect_time)
-            else:
-                RNS.log(f"RNode detect timed out over {self.port}", RNS.LOG_ERROR)
+            while not self.detected and time.time() < detect_time + ble_detect_timeout: time.sleep(0.1)
+            if self.detected: detect_time = RNS.prettytime(time.time()-detect_time)
+            else: RNS.log(f"RNode detect timed out over {self.port}", RNS.LOG_ERROR)
+        else:
+            sleep(0.2)
 
         if not self.detected:
             raise IOError("Could not detect device")
@@ -716,11 +750,19 @@ class RNodeInterface(Interface):
 
         if self.serial != None and self.port != None:
             self.timeout = 200
-            RNS.log("Serial port "+self.port+" is now open")
+            RNS.log(f"Serial port {self.port} is now open")
 
         if self.bt_manager != None and self.bt_manager.connected:
             self.timeout = 1500
-            RNS.log("Bluetooth connection to RNode now open")
+            RNS.log(f"Bluetooth connection to RNode now open")
+
+        if self.ble != None and self.ble.connected:
+            self.timeout = 1500
+            RNS.log(f"BLE connection {self.port} to RNode now open")
+
+        if self.tcp != None and self.tcp.connected:
+            self.timeout = 1500
+            RNS.log(f"TCP connection tcp://{self.tcp_host} to RNode now open")
 
         RNS.log("Configuring RNode interface...", RNS.LOG_VERBOSE)
         self.initRadio()
@@ -972,10 +1014,8 @@ class RNodeInterface(Interface):
 
     def validateRadioState(self):
         RNS.log("Waiting for radio configuration validation for "+str(self)+"...", RNS.LOG_VERBOSE)
-        if not self.platform == KISS.PLATFORM_ESP32:
-            sleep(1.00);
-        else:
-            sleep(2.00);
+        if not self.platform == KISS.PLATFORM_ESP32: sleep(1.00);
+        else: sleep(2.00);
 
         self.validcfg = True
         if (self.r_frequency != None and abs(self.frequency - int(self.r_frequency)) > 100):
@@ -1272,10 +1312,12 @@ class RNodeInterface(Interface):
                                     self.r_channel_load_long  = cul/100.0
                                     self.r_current_rssi       = crs-RNodeInterface.RSSI_OFFSET
                                     self.r_noise_floor        = nfl-RNodeInterface.RSSI_OFFSET
+                                    
                                     if ntf == 0xFF:
                                         self.r_interference   = None
                                     else:
                                         self.r_interference   = ntf-RNodeInterface.RSSI_OFFSET
+                                        self.r_interference_l = [time.time(), self.r_interference]
                                     
                                     if self.r_interference != None:
                                         RNS.log(f"{self} Radio detected interference at {self.r_interference} dBm", RNS.LOG_DEBUG)
@@ -1355,6 +1397,22 @@ class RNodeInterface(Interface):
                                         bat_percent = 0
                                     self.r_battery_state   = command_buffer[0]
                                     self.r_battery_percent = bat_percent
+                        elif (command == KISS.CMD_STAT_TEMP):
+                            if (byte == KISS.FESC):
+                                escape = True
+                            else:
+                                if (escape):
+                                    if (byte == KISS.TFEND):
+                                        byte = KISS.FEND
+                                    if (byte == KISS.TFESC):
+                                        byte = KISS.FESC
+                                    escape = False
+                                command_buffer = command_buffer+bytes([byte])
+                                if (len(command_buffer) == 1):
+                                    temp = command_buffer[0]-120
+                                    if temp >= -30 and temp <= 90: self.r_temperature = temp
+                                    else:                          self.r_temperature = None
+                                    self.cpu_temp = self.r_temperature
                         elif (command == KISS.CMD_RANDOM):
                             self.r_random = byte
                         elif (command == KISS.CMD_PLATFORM):
@@ -1425,7 +1483,7 @@ class RNodeInterface(Interface):
                 if got == 0:
                     time_since_last = int(time.time()*1000) - last_read_ms
                     if len(data_buffer) > 0 and time_since_last > self.timeout:
-                        RNS.log(str(self)+" serial read timeout in command "+str(command), RNS.LOG_WARNING)
+                        RNS.log(f"{self} device read timeout in command {command} after {RNS.prettytime(self.timeout/1000.0)}", RNS.LOG_WARNING)
                         data_buffer = b""
                         in_frame = False
                         command = KISS.CMD_UNKNOWN
@@ -1436,19 +1494,19 @@ class RNodeInterface(Interface):
                             if time.time() > self.first_tx + self.id_interval:
                                 RNS.log("Interface "+str(self)+" is transmitting beacon data: "+str(self.id_callsign.decode("utf-8")), RNS.LOG_DEBUG)
                                 self.process_outgoing(self.id_callsign)
-                    
-                    if (time.time() - self.last_port_io > self.port_io_timeout):
-                        self.detect()
-                    
-                    if (time.time() - self.last_port_io > self.port_io_timeout*3):
-                        raise IOError("Connected port for "+str(self)+" became unresponsive")
 
-                    if self.bt_manager != None:
-                        sleep(0.08)
+                    if self.use_tcp:
+                        if self.tcp and self.tcp.connected:
+                            if time.time() > self.tcp.last_write + self.tcp.ACTIVITY_KEEPALIVE:
+                                self.detect()
+                    
+                    if (time.time() - self.last_port_io > self.port_io_timeout): self.detect()
+                    if (time.time() - self.last_port_io > self.port_io_timeout*3): raise IOError("Connected port for "+str(self)+" became unresponsive")
+                    if self.bt_manager != None or self.ble != None: sleep(0.08)
 
         except Exception as e:
             self.online = False
-            RNS.log("A serial port occurred, the contained exception was: "+str(e), RNS.LOG_ERROR)
+            RNS.log("A serial port error occurred, the contained exception was: "+str(e), RNS.LOG_ERROR)
             RNS.log("The interface "+str(self)+" experienced an unrecoverable error and is now offline.", RNS.LOG_ERROR)
 
             if RNS.Reticulum.panic_on_interface_error:
@@ -1506,12 +1564,18 @@ class RNodeInterface(Interface):
 
     def detach(self):
         self.detached = True
-        self.disable_external_framebuffer()
-        self.setRadioState(KISS.RADIO_STATE_OFF)
-        self.leave()
+        try:
+            self.disable_external_framebuffer()
+            self.setRadioState(KISS.RADIO_STATE_OFF)
+            self.leave()
 
-        if self.use_ble:
-            self.ble.close()
+        except Exception as e:
+            RNS.log(f"An error occurred while detaching {self}: {e}", RNS.LOG_ERROR)
+
+        if self.use_ble: self.ble.close()
+        if self.use_tcp:
+            time.sleep(0.5)
+            self.tcp.close()
 
     def should_ingress_limit(self):
         return False
@@ -1532,6 +1596,17 @@ class RNodeInterface(Interface):
     def get_battery_percent(self):
         return self.r_battery_percent
 
+    def tcp_receive(self, data):
+        with self.tcp_rx_lock: self.tcp_rx_queue += data
+
+    def tcp_waiting(self): return len(self.tcp_tx_queue) > 0
+
+    def get_tcp_waiting(self, n):
+        with self.tcp_tx_lock:
+            data = self.tcp_tx_queue[:n]
+            self.tcp_tx_queue = self.tcp_tx_queue[n:]
+            return data
+
     def ble_receive(self, data):
         with self.ble_rx_lock:
             self.ble_rx_queue += data
@@ -1546,7 +1621,7 @@ class RNodeInterface(Interface):
             return data
 
     def __str__(self):
-        return "RNodeInterface["+str(self.name)+"]"
+        return f"RNodeInterface[{self.name}]"
 
 class BLEConnection(BluetoothDispatcher):
     UART_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -1554,7 +1629,7 @@ class BLEConnection(BluetoothDispatcher):
     UART_TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
     MAX_GATT_ATTR_LEN = 512
     BASE_MTU          = 20
-    TARGET_MTU        = 242
+    TARGET_MTU        = 512
 
     MTU_TIMEOUT = 4.0
     CONNECT_TIMEOUT = 7.0
@@ -1699,12 +1774,15 @@ class BLEConnection(BluetoothDispatcher):
             else:
                 RNS.log(f"BLE device connection timed out for {self.owner}", RNS.LOG_DEBUG)
                 if self.mtu_requested_time:
-                    RNS.log("MTU update timeout, tearing down connection")
+                    RNS.log("MTU update timeout, tearing down connection and resetting BLE dispatcher")
                     self.owner.hw_errors.append({"error": KISS.ERROR_INVALID_BLE_MTU, "description": "The Bluetooth Low Energy transfer MTU could not be configured for the connected device, and communication has failed. Restart Reticulum and any connected applications to retry connecting."})
                     self.close()
+                    self.close_gatt()
                     self.should_run = False
-                
-                self.close_gatt()
+                    self.owner.awaiting_ble_reset = True
+
+                else:
+                    self.close_gatt()
 
             self.connect_job_running = False
 
@@ -1787,3 +1865,138 @@ class BLEConnection(BluetoothDispatcher):
         if characteristic.getUuid().toString() == BLEConnection.UART_TX_CHAR_UUID:
             recvd = bytes(characteristic.getValue())
             self.owner.ble_receive(recvd)
+
+class TCPConnection():
+    TARGET_PORT = 7633
+    CONNECT_TIMEOUT = 5.0
+    INITIAL_CONNECT_TIMEOUT = 5.0
+    RECONNECT_WAIT = 4.0
+    ACTIVITY_TIMEOUT = 6.0
+    ACTIVITY_KEEPALIVE = ACTIVITY_TIMEOUT-2.5
+
+    TCP_USER_TIMEOUT = 24
+    TCP_PROBE_AFTER = 5
+    TCP_PROBE_INTERVAL = 2
+    TCP_PROBES = 12
+
+    @property
+    def is_open(self):
+        return self.connected
+
+    @property
+    def in_waiting(self):
+        buflen = len(self.owner.tcp_rx_queue)
+        return buflen > 0
+
+    def write(self, data_bytes):
+        if self.connected and self.socket:
+            with self.owner.tcp_tx_lock:
+                if len(self.owner.tcp_tx_queue) > 0:
+                    self.socket.sendall(self.owner.tcp_tx_queue)
+                    self.owner.tcp_tx_queue = b""
+
+            self.socket.sendall(data_bytes)
+            self.last_write = time.time()
+
+        else:
+            with self.owner.tcp_tx_lock: self.owner.tcp_tx_queue += data_bytes
+
+        return len(data_bytes)
+
+    def read(self, n=4096):
+        with self.owner.tcp_rx_lock:
+            data = self.owner.tcp_rx_queue[:n]
+            self.owner.tcp_rx_queue = self.owner.tcp_rx_queue[n:]
+            return data
+
+    def close(self):
+        if self.connected:
+            RNS.log(f"Disconnecting TCP socket for {self.owner}", RNS.LOG_DEBUG)
+            self.must_disconnect = True
+            if self.socket: self.socket.close()
+
+    def __init__(self, owner=None, target_host=None):
+        self.owner = owner
+        self.target_host = target_host
+        self.connected = False
+        self.reconnecting = False
+        self.running = False
+        self.should_run = False
+        self.must_disconnect = False
+        self.connect_job_running = False
+        self.last_write = time.time()
+
+        self.should_run = True
+        self.connection_thread = threading.Thread(target=self.initial_connect, daemon=True).start()
+
+    def set_timeouts_linux(self):
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, int(self.TCP_USER_TIMEOUT * 1000))
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, int(self.TCP_PROBE_AFTER))
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, int(self.TCP_PROBE_INTERVAL))
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, int(self.TCP_PROBES))
+
+    def set_timeouts_osx(self):
+        if hasattr(socket, "TCP_KEEPALIVE"): TCP_KEEPIDLE = socket.TCP_KEEPALIVE
+        else: TCP_KEEPIDLE = 0x10
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        self.socket.setsockopt(socket.IPPROTO_TCP, TCP_KEEPIDLE, int(self.TCP_PROBE_AFTER))
+
+    def cleanup(self):
+        try:
+            if self.socket: self.socket.close()
+        except Exception as e:
+            RNS.log(f"Error while disconnecting TCP socket on cleanup for {self.owner}", RNS.LOG_ERROR)
+
+        self.should_run = False
+
+    def initial_connect(self):
+        if self.connect(initial=True): threading.Thread(target=self.read_loop, daemon=True).start()
+
+    def connect(self, initial=False):
+        try:
+            if initial:
+                RNS.log(f"Establishing TCP connection to device for {self.owner}...", RNS.LOG_DEBUG)
+
+            address_info = socket.getaddrinfo(self.target_host, self.TARGET_PORT, proto=socket.IPPROTO_TCP)[0]
+            address_family = address_info[0]
+            target_address = address_info[4]
+
+            self.socket = socket.socket(address_family, socket.SOCK_STREAM)
+            self.socket.settimeout(self.INITIAL_CONNECT_TIMEOUT)
+            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.socket.connect(target_address)
+            self.socket.settimeout(None)
+            self.connected  = True
+            self.last_write = time.time()
+
+            RNS.log(f"TCP connection to device for {self.owner} established", RNS.LOG_DEBUG)
+
+            if RNS.vendor.platformutils.is_linux():    self.set_timeouts_linux()
+            elif RNS.vendor.platformutils.is_darwin(): self.set_timeouts_osx()
+
+            return True
+        
+        except Exception as e:
+            if initial:
+                RNS.log(f"TCP connection to device for {self.owner} could not be established: {e}", RNS.LOG_ERROR)
+                return False
+            
+            else: raise e
+
+    def read_loop(self):
+        try:
+            data_in = b""
+            while not self.must_disconnect:
+                if self.socket: data_in = self.socket.recv(4096)
+                else: data_in = b""
+
+                if len(data_in) > 0: self.owner.tcp_receive(data_in)
+                else:
+                    self.connected = False
+                    RNS.log(f"The TCP socket for {self} was closed", RNS.LOG_WARNING)
+                    break
+
+        except Exception as e:
+            self.connected = False
+            RNS.log(f"A TCP read error occurred for {self}, the contained exception was: {e}", RNS.LOG_WARNING)

@@ -39,6 +39,7 @@ if get_platform() == "android":
     from .Interfaces import UDPInterface
     from .Interfaces import I2PInterface
     from .Interfaces import RNodeMultiInterface
+    from .Interfaces import WeaveInterface
     from .Interfaces.Android import RNodeInterface
     from .Interfaces.Android import SerialInterface
     from .Interfaces.Android import KISSInterface
@@ -767,6 +768,10 @@ class Reticulum:
                                     interface_post_init(interface)
                                     interface.start()
 
+                                if c["type"] == "WeaveInterface":
+                                    interface = WeaveInterface.WeaveInterface(RNS.Transport, interface_config)
+                                    interface_post_init(interface)
+
                                 if interface == None:
                                     # Interface was not handled by any internal interface types,
                                     # attempt to load and initialise it from user-supplied modules
@@ -801,6 +806,7 @@ class Reticulum:
                         except Exception as e:
                             RNS.log("The interface \""+name+"\" could not be created. Check your configuration file for errors!", RNS.LOG_ERROR)
                             RNS.log("The contained exception was: "+str(e), RNS.LOG_ERROR)
+                            RNS.trace_exception(e)
                             RNS.panic()
                     else:
                         RNS.log("The interface name \""+name+"\" was already used. Check your configuration file for errors!", RNS.LOG_ERROR)
@@ -1021,6 +1027,34 @@ class Reticulum:
 
                 if hasattr(interface, "r_noise_floor"):
                     ifstats["noise_floor"] = interface.r_noise_floor
+
+                if hasattr(interface, "r_interference"):
+                    ifstats["interference"] = interface.r_interference
+
+                if hasattr(interface, "r_interference_l") and type(interface.r_interference_l) == list:
+                    ifstats["interference_last_ts"] = interface.r_interference_l[0]
+                    ifstats["interference_last_dbm"] = interface.r_interference_l[1]
+
+                if hasattr(interface, "cpu_temp"):
+                    ifstats["cpu_temp"] = interface.cpu_temp
+
+                if hasattr(interface, "cpu_load"):
+                    ifstats["cpu_load"] = interface.cpu_load
+
+                if hasattr(interface, "mem_load"):
+                    ifstats["mem_load"] = interface.mem_load
+
+                if hasattr(interface, "switch_id"):
+                    if interface.switch_id != None: ifstats["switch_id"] = RNS.hexrep(interface.switch_id)
+                    else:                           ifstats["switch_id"] = None
+
+                if hasattr(interface, "via_switch_id"):
+                    if interface.via_switch_id != None: ifstats["via_switch_id"] = RNS.hexrep(interface.via_switch_id)
+                    else:                               ifstats["via_switch_id"] = None
+
+                if hasattr(interface, "endpoint_id"):
+                    if interface.endpoint_id != None: ifstats["endpoint_id"] = RNS.hexrep(interface.endpoint_id)
+                    else:                             ifstats["endpoint_id"] = None
 
                 if hasattr(interface, "r_battery_state"):
                     if interface.r_battery_state != 0x00:

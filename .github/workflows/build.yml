@@ -28,7 +28,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.x
+          python-version: 3.11
       - run: |
           python -m pip install -q cryptography
           make test
@@ -43,7 +43,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.x
+          python-version: 3.11
       - run: |
           python -m pip install -q build wheel setuptools
           make remove_symlinks
@@ -93,6 +93,6 @@ jobs:
 #            .artifacts/documentation/latex/reticulumnetworkstack.pdf
 #            .artifacts/documentation/epub/ReticulumNetworkStack.epub
           draft: true
-          generate_release_notes: true
+          generate_release_notes: false
           prerelease: ${{ contains(github.ref, '-') }}
           fail_on_unmatched_files: true

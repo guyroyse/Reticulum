@@ -17,6 +17,9 @@ for example the :ref:`PipeInterface<interfaces-pipe>` or the :ref:`TCPClientInte
 in combination with code like `TCP KISS Server <https://github.com/simplyequipped/tcpkissserver>`_
 by `simplyequipped <https://github.com/simplyequipped>`_.
 
+It is also very easy to write and load :ref:`custom interface modules<interfaces-custom>`
+into Reticulum, allowing you to communicate with more or less anything you can think of.
+
 While this broad support and flexibility is very useful, an abundance of options
 can sometimes make it difficult to know where to begin, especially when you are
 starting from scratch.
@@ -149,7 +152,7 @@ OpenCom XL
 """"""""""""""""""""
 - **Transceiver ICs** Semtech SX1262 and SX1280 (dual transceiver)
 - **Device Platform** nRF52
-- **Manufacturer** `RAK Wireless <https://liberatedsystems.co.uk/>`_
+- **Manufacturer** `Liberated Embedded Systems <https://liberatedsystems.co.uk/>`_
 
 ------------
 
@@ -232,6 +235,18 @@ LilyGO T-Echo
 Heltec T114
 """""""""""
 - **Transceiver IC** Semtech SX1262 or SX1268
+- **Device Platform** nRF52
+- **Manufacturer** `Heltec Automation <https://heltec.org>`_
+
+------------
+
+.. image:: graphics/board_heltec32v4.png
+    :width: 58%
+    :align: center
+
+Heltec LoRa32 v4.0
+""""""""""""""""""
+- **Transceiver IC** Semtech SX1262
 - **Device Platform** ESP32
 - **Manufacturer** `Heltec Automation <https://heltec.org>`_
 
